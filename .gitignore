@@ -1,0 +1,6 @@
+.env
+gromacs_runs.tsv
+.progress_cache.json
+__pycache__/
+*.log
+.DS_Store
