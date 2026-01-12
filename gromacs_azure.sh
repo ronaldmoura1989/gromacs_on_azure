@@ -17,13 +17,13 @@ echo "Running on $(hostname) with 64 vCPUs optimization"
 # GMX Flags for Standard_D64alds_v6 (64 vCPUs)
 # Using 8 MPI ranks with 8 OpenMP threads each = 64 threads total. 
 # 8x8 is often optimal for NUMA nodes on 64-core EPYC.
-GMX_FLAGS="-ntmpi 8 -ntomp 8 -pin on -nb cpu -pinoffset 0 -pinstride 1"
+GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
 
 # 1. Topology Generation
 echo "-> Generating topology..."
 # Force field 13: GROMOS96 53a6
 # Added -vsite hydrogens to allow 5fs time step (requires update in mdp file dt=0.005)
-printf '13\n' | gmx pdb2gmx -f $PDB_FILE -o ${BASENAME}_processed.gro -water spce -ignh -vsite hydrogens
+printf '13\n' | gmx pdb2gmx -f $PDB_FILE -o ${BASENAME}_processed.gro -water spce -ignh
 
 # 2. Box Definition
 echo "-> Defining box..."

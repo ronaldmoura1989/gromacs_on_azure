@@ -171,15 +171,15 @@ Pricing is based on **East US** region (approximate rates as of late 2025/early 
 
 ## 7. GROMACS Simulation Parameters
 
-The simulations are performed using **GROMACS 2023.2**, configured with parameters optimized for computational efficiency on high-core-count cloud infrastructure (Azure D-series). The specific choices allow for a significant increase in sampling speed without compromising biological accuracy for standard protein systems.
+The simulations are performed using **GROMACS 2023.2**, configured with parameters optimized for computational efficiency on high-core-count cloud infrastructure (Azure D-series). The specific choices ensure robust stability and valid biological sampling for standard protein systems.
 
 ### Configuration Details
 
 *   **Force Field**: GROMOS96 53a6.
 *   **Water Model**: SPC/E (Extended Simple Point Charge).
 *   **Integrator**: md (Lead-Frog).
-*   **Time Step**: 5 fs (`dt = 0.005`).
-    *   *Optimization*: This larger time step (standard is 2 fs) is enabled by the use of **Virtual Sites** (`-vsite hydrogens` in `pdb2gmx`), which removes the fastest degrees of freedom (hydrogen vibrations) by treating hydrogen atoms as rigid bodies fixed to their heavy atoms. This results in a ~2.5x speedup in simulation throughput.
+*   **Time Step**: 2 fs (`dt = 0.002`).
+    *   *Note*: Standard conservative time step ensures stability during equilibration and production runs without the need for virtual sites (which caused compatibility issues with GROMOS96 in this environment).
 *   **Parallelization**:
     *   **Architecture**: Hybrid MPI/OpenMP.
     *   **Configuration**: 8 MPI ranks × 8 OpenMP threads (`-ntmpi 8 -ntomp 8`).
