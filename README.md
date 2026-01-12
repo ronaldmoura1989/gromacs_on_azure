@@ -101,12 +101,43 @@ python3 monitor_progress.py
 ```
 *Output Example:*
 ```text
-VM ID      | IP Address      | Basename                       | NVT Time        | NPT Time        | MD Time        | Last Check          
+VM ID      | IP Address      | Basename                       | NVT Time        | NPT Time        | MD Time        | Last Check
 --------------------------------------------------------------------------------------------------------------------------------------------
-vm-md-01   | 13.82.93.175    | miocardin_A0A499FIJ6_C684te..  | 631.00000 ps    | Not Started     | Not Started    | 2026-01-11 17:35:10 
-vm-md-02   | 172.178.47.153  | miocardin_A0A499FIJ6_K823te..  | 514.00000 ps    | Not Started     | Not Started    | 2026-01-11 17:35:11 
+vm-md-01   | 13.82.93.175    | miocardin_A0A499FIJ6_C684te..  | 631.00000 ps    | Not Started     | Not Started    | 2026-01-11 17:35:10
+vm-md-02   | 172.178.47.153  | miocardin_A0A499FIJ6_K823te..  | 514.00000 ps    | Not Started     | Not Started    | 2026-01-11 17:35:11
 ...
 ```
+
+### Step 6: Update Scripts on Running VMs
+
+If you've made improvements to `gromacs_azure.sh`, `.mdp` files, or resume scripts, use this script to push updates to all VMs and optionally restart from checkpoints.
+
+```bash
+# Just upload updated files (doesn't restart simulations)
+python3 update_scripts.py
+
+# Upload files AND restart simulations from checkpoints
+python3 update_scripts.py --restart
+```
+
+**What gets updated:**
+- `gromacs_azure.sh` → uploaded to `/data/simulations/{basename}/`
+- `.mdp` files → uploaded to `/data/simulations/{basename}/`
+- Resume scripts (`scripts/*.sh`) → uploaded to `/data/scripts/`
+
+**Use cases:**
+- Applied performance optimizations (new GMX flags, I/O settings, etc.)
+- Fixed bugs in simulation scripts
+- Updated resume logic for Spot instance handling
+- Changed .mdp parameters (PME grid spacing, output frequency, etc.)
+
+**Important:** The `--restart` flag will:
+1. Stop current GROMACS jobs gracefully
+2. Upload all updated files
+3. Resume simulations from the last checkpoint
+4. Continue the complete workflow (e.g., if in MD → continues to Analysis)
+
+This ensures zero data loss and applies new optimizations immediately.
 
 ---
 
