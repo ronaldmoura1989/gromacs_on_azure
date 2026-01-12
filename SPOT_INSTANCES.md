@@ -245,16 +245,94 @@ for sim_dir in /data/simulations/*/; do
         echo "Checking simulation in $sim_dir"
         cd "$sim_dir"
 
-        # Check if there's a checkpoint file and TPR file
-        if [ -f "state.cpt" ] && [ -f "topol.tpr" ]; then
-            echo "Resuming simulation in $sim_dir"
-            # -cpi checks for checkpoint. If found, it appends.
-            # Run with nohup to keep it running in background
-            nohup /usr/local/gromacs/bin/gmx mdrun -s topol.tpr -cpi state.cpt -maxh 24 >> run.log 2>&1 &
-            echo "Simulation resumed with PID $!"
+        # Determine which step to resume (MD > NPT > NVT)
+        if [ -f "md.tpr" ] && [ -f "md.cpt" ]; then
+            echo "Resuming Production MD in $sim_dir"
+            /data/resume_md.sh "$sim_dir"
+        elif [ -f "npt.tpr" ] && [ -f "npt.cpt" ]; then
+            echo "Resuming NPT Equilibration in $sim_dir"
+            /data/resume_npt.sh "$sim_dir"
+        elif [ -f "nvt.tpr" ] && [ -f "nvt.cpt" ]; then
+            echo "Resuming NVT Equilibration in $sim_dir"
+            /data/resume_nvt.sh "$sim_dir"
         else
-            echo "No checkpoint or TPR file found in $sim_dir, skipping"
+            echo "No resumable checkpoint found in $sim_dir, skipping"
         fi
     fi
 done
+```
+
+**`resume_nvt.sh`**:
+```bash
+#!/bin/bash
+# Resume NVT Equilibration step
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <SIMULATION_DIR>"
+    exit 1
+fi
+
+SIM_DIR="$1"
+cd "$SIM_DIR"
+
+# Source GROMACS environment
+source /usr/local/gromacs/bin/GMXRC
+
+# GMX Flags for Standard_D64alds_v6 (64 vCPUs)
+GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
+
+echo "Resuming NVT equilibration in $SIM_DIR"
+# Resume NVT from checkpoint
+nohup gmx mdrun -deffnm nvt -cpi nvt.cpt $GMX_FLAGS -v >> nvt_resume.log 2>&1 &
+echo "NVT resumed with PID $!"
+```
+
+**`resume_npt.sh`**:
+```bash
+#!/bin/bash
+# Resume NPT Equilibration step
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <SIMULATION_DIR>"
+    exit 1
+fi
+
+SIM_DIR="$1"
+cd "$SIM_DIR"
+
+# Source GROMACS environment
+source /usr/local/gromacs/bin/GMXRC
+
+# GMX Flags for Standard_D64alds_v6 (64 vCPUs)
+GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
+
+echo "Resuming NPT equilibration in $SIM_DIR"
+# Resume NPT from checkpoint
+nohup gmx mdrun -deffnm npt -cpi npt.cpt $GMX_FLAGS -v >> npt_resume.log 2>&1 &
+echo "NPT resumed with PID $!"
+```
+
+**`resume_md.sh`**:
+```bash
+#!/bin/bash
+# Resume Production MD step
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <SIMULATION_DIR>"
+    exit 1
+fi
+
+SIM_DIR="$1"
+cd "$SIM_DIR"
+
+# Source GROMACS environment
+source /usr/local/gromacs/bin/GMXRC
+
+# GMX Flags for Standard_D64alds_v6 (64 vCPUs)
+GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
+
+echo "Resuming Production MD in $SIM_DIR"
+# Resume MD from checkpoint
+nohup gmx mdrun -deffnm md -cpi md.cpt $GMX_FLAGS -v >> md_resume.log 2>&1 &
+echo "Production MD resumed with PID $!"
 ```
