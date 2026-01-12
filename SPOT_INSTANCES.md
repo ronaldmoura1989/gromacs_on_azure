@@ -231,11 +231,30 @@ Add this line to your `crontab` on the VM (`crontab -e`):
 ```bash
 #!/bin/bash
 sleep 30 # Wait for network/disks
+
 # 1. Mount Disk
 mount /dev/disk/by-uuid/<UUID> /data
 
-# 2. Resume GROMACS
-cd /data/simulation_dir
-# -cpi checks for checkpoint. If found, it appends.
-/usr/local/gromacs/bin/gmx mdrun -s topol.tpr -cpi state.cpt -maxh 24 >> run.log 2>&1
+# 2. Source GROMACS environment
+source /usr/local/gromacs/bin/GMXRC
+
+# 3. Resume GROMACS simulations
+# Find all simulation directories and resume each one
+for sim_dir in /data/simulations/*/; do
+    if [ -d "$sim_dir" ]; then
+        echo "Checking simulation in $sim_dir"
+        cd "$sim_dir"
+
+        # Check if there's a checkpoint file and TPR file
+        if [ -f "state.cpt" ] && [ -f "topol.tpr" ]; then
+            echo "Resuming simulation in $sim_dir"
+            # -cpi checks for checkpoint. If found, it appends.
+            # Run with nohup to keep it running in background
+            nohup /usr/local/gromacs/bin/gmx mdrun -s topol.tpr -cpi state.cpt -maxh 24 >> run.log 2>&1 &
+            echo "Simulation resumed with PID $!"
+        else
+            echo "No checkpoint or TPR file found in $sim_dir, skipping"
+        fi
+    fi
+done
 ```
