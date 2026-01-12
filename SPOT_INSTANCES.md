@@ -382,15 +382,27 @@ Add this line to your `crontab` on each VM (`crontab -e`):
 ```
 
 #### Manual Resume After Updates
-If you need to update scripts and resume simulations manually:
+If you need to update scripts and resume simulations manually, use the automated update script:
 
 ```bash
-# 1. Upload updated scripts
-scp scripts/*.sh user@vm-ip:/data/scripts/
+# Option 1: Use update_scripts.py (RECOMMENDED - updates all VMs from gromacs_runs.tsv)
+python3 update_scripts.py --restart
 
-# 2. Stop current jobs and resume from checkpoints
+# Option 2: Manual update for a single VM
+scp scripts/*.sh user@vm-ip:/data/scripts/
+scp gromacs_azure.sh user@vm-ip:/data/simulations/{basename}/
+scp gromacs_parameters/*.mdp user@vm-ip:/data/simulations/{basename}/
 ssh user@vm-ip "/data/scripts/resume_job.sh --stop"
 ```
+
+The `update_scripts.py` script:
+- Reads VMs from `gromacs_runs.tsv` (same as `run_simulations.py`)
+- Uploads `gromacs_azure.sh` and `.mdp` files to simulation directories
+- Uploads resume scripts to `/data/scripts/`
+- With `--restart` flag: stops jobs and resumes from checkpoints
+- Ensures all VMs get updates simultaneously
+
+See README.md Step 6 for full documentation.
 
 #### Resume Scripts Overview
 
