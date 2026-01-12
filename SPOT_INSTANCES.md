@@ -191,33 +191,177 @@ while True:
     time.sleep(5)
 ```
 
-### B. Outside the VM (Auto-Restart)
-You need a "Manager" (your laptop or a tiny separate VM) to check if the Spot VMs have been stopped and try to start them again.
+### B. Outside the VM (Auto-Restart Manager)
+You need a "Manager" VM to continuously monitor and restart evicted Spot instances. While you could run this on your laptop, deploying a dedicated small Azure VM ensures 24/7 monitoring without keeping your local machine running.
 
-**Script**: `spot_manager.sh` (Run continuously on your laptop)
+#### Option 1: Deploy a Dedicated Manager VM (Recommended)
+Create a small, always-on VM in the same resource group to manage your Spot instances. This VM will be extremely cheap (~$10-15/month) compared to your compute cluster.
+
+**Script**: `create-manager-vm.sh`
+```bash
+#!/bin/bash
+# Creates a small manager VM to monitor and restart Spot instances
+
+set -e
+
+# Load credentials
+if [ -f .env ]; then
+    source .env
+else
+    echo "Error: .env file not found."
+    exit 1
+fi
+
+TARGET_RG="rg-md-eastus"
+TARGET_LOCATION="eastus"
+MANAGER_NAME="vm-spot-manager"
+VNET_NAME="vnet-md-eastus"
+SUBNET_NAME="subnet-compute"
+ADMIN_USER="${SSH_USER}"
+ADMIN_PASS="${SSH_PASSWORD}"
+
+echo "=== Creating Spot Manager VM ==="
+
+# Create Public IP
+echo "Creating Public IP..."
+az network public-ip create \
+  --resource-group $TARGET_RG \
+  --name ${MANAGER_NAME}-pip \
+  --sku Standard \
+  --location $TARGET_LOCATION \
+  --allocation-method Static \
+  --output none
+
+# Create NIC
+echo "Creating NIC..."
+az network nic create \
+  --resource-group $TARGET_RG \
+  --name ${MANAGER_NAME}-nic \
+  --vnet-name $VNET_NAME \
+  --subnet $SUBNET_NAME \
+  --location $TARGET_LOCATION \
+  --public-ip-address ${MANAGER_NAME}-pip \
+  --output none
+
+# Create small VM (B2s: 2 vCPUs, 4GB RAM - ~$0.05/hr = $36/month)
+echo "Creating Manager VM..."
+az vm create \
+  --resource-group $TARGET_RG \
+  --name $MANAGER_NAME \
+  --location $TARGET_LOCATION \
+  --size Standard_B2s \
+  --image Ubuntu2204 \
+  --os-disk-size-gb 30 \
+  --os-disk-name "${MANAGER_NAME}-osdisk" \
+  --storage-sku StandardSSD_LRS \
+  --admin-username $ADMIN_USER \
+  --admin-password $ADMIN_PASS \
+  --authentication-type password \
+  --nics ${MANAGER_NAME}-nic \
+  --tags environment=production workload=spot-manager \
+  --output none
+
+# Assign VM Contributor role to the Manager VM (so it can start/stop VMs)
+echo "Assigning VM Contributor role..."
+MANAGER_PRINCIPAL_ID=$(az vm identity assign \
+  --resource-group $TARGET_RG \
+  --name $MANAGER_NAME \
+  --query principalId -o tsv)
+
+az role assignment create \
+  --assignee $MANAGER_PRINCIPAL_ID \
+  --role "Virtual Machine Contributor" \
+  --scope "/subscriptions/${AZURE_SUBSCRIPTION}/resourceGroups/${TARGET_RG}"
+
+echo "✓ Manager VM created successfully"
+
+# Get Public IP
+MANAGER_IP=$(az network public-ip show \
+  --resource-group $TARGET_RG \
+  --name ${MANAGER_NAME}-pip \
+  --query ipAddress -o tsv)
+
+echo ""
+echo "Manager VM IP: $MANAGER_IP"
+echo "SSH: ssh $ADMIN_USER@$MANAGER_IP"
+echo ""
+echo "Next Steps:"
+echo "1. SSH into the manager VM"
+echo "2. Install Azure CLI: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
+echo "3. Login with managed identity: az login --identity"
+echo "4. Deploy spot_manager.sh script (see below)"
+```
+
+#### Deploying the Monitor Script on Manager VM
+Once the manager VM is created, SSH into it and set up the monitoring script:
+
+**Script**: `spot_manager.sh` (Deploy to `/home/[user]/spot_manager.sh` on manager VM)
 ```bash
 #!/bin/bash
 # Checks for STOPPED VMs every 15 minutes and tries to start them.
 
 RG="rg-md-eastus"
 
+# Log file
+LOG_FILE="/home/$(whoami)/spot_manager.log"
+
+# Login using managed identity (no credentials needed!)
+az login --identity > /dev/null 2>&1
+
 while true; do
-    echo "[$(date)] Checking for stopped Spot instances..."
-    
-    # Get IDs of all STOPPED VMs
-    IDS=$(az vm list -g $RG -d --query "[?powerState=='VM stopped'].id" -o tsv)
-    
+    echo "[$(date)] Checking for stopped Spot instances..." | tee -a $LOG_FILE
+
+    # Get IDs of all STOPPED VMs (excluding the manager itself)
+    IDS=$(az vm list -g $RG -d \
+      --query "[?powerState=='VM stopped' && name!='vm-spot-manager'].id" -o tsv)
+
     if [ ! -z "$IDS" ]; then
-        echo "Found stopped VMs. Attempting to restart..."
+        echo "Found stopped VMs. Attempting to restart..." | tee -a $LOG_FILE
         # Try to start them. If capacity is unavailable, this command will fail/error, which is fine.
-        az vm start --ids $IDS || echo "  > Start failed (likely no capacity). Retrying in 15 mins."
+        az vm start --ids $IDS 2>&1 | tee -a $LOG_FILE || \
+          echo "  > Start failed (likely no capacity). Retrying in 15 mins." | tee -a $LOG_FILE
     else
-        echo "  > All VMs are running."
+        echo "  > All VMs are running." | tee -a $LOG_FILE
     fi
-    
+
     # Wait 15 minutes
     sleep 900
 done
+```
+
+**Setup on Manager VM**:
+```bash
+# 1. SSH into manager VM
+ssh ${SSH_USER}@<MANAGER_IP>
+
+# 2. Install Azure CLI
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+# 3. Login with managed identity
+az login --identity
+
+# 4. Create the script
+nano ~/spot_manager.sh
+# (Paste the script above)
+chmod +x ~/spot_manager.sh
+
+# 5. Run in background with nohup
+nohup ~/spot_manager.sh &
+
+# 6. (Optional) Add to crontab for auto-restart on reboot
+crontab -e
+# Add: @reboot nohup /home/[username]/spot_manager.sh &
+```
+
+#### Option 2: Run on Your Laptop
+If you prefer to run the manager on your local machine (must stay on 24/7):
+
+```bash
+# Ensure you're logged in to Azure CLI
+az login
+
+# Run the spot_manager.sh script (without the 'az login --identity' line)
+./spot_manager.sh
 ```
 
 ### C. Auto-Resume Logic
