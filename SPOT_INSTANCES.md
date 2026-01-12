@@ -374,15 +374,49 @@ Add this line to your `crontab` on the VM (`crontab -e`):
 **`resume_job.sh`**:
 ```bash
 #!/bin/bash
-sleep 30 # Wait for network/disks
+MOUNT_POINT="/data"
+DISK_DEVICE="/dev/nvme0n2"
+MAX_WAIT=120 # Wait up to 2 minutes for disk
 
-# 1. Mount Disk
-mount /dev/disk/by-uuid/<UUID> /data
+echo "Starting resume job at $(date)"
 
-# 2. Source GROMACS environment
+# 1. Wait for disk to auto-mount (from /etc/fstab)
+echo "Waiting for data disk to mount..."
+count=0
+while [ $count -lt $MAX_WAIT ]; do
+    if grep -qs "$MOUNT_POINT" /proc/mounts; then
+        echo "✓ Disk mounted at $MOUNT_POINT"
+        break
+    fi
+    sleep 1
+    ((count++))
+done
+
+# 2. If not mounted, try manual mount
+if ! grep -qs "$MOUNT_POINT" /proc/mounts; then
+    echo "Disk not auto-mounted, attempting manual mount..."
+
+    # Detect partition
+    if [ -b "${DISK_DEVICE}p1" ]; then
+        PARTITION="${DISK_DEVICE}p1"
+    elif [ -b "${DISK_DEVICE}1" ]; then
+        PARTITION="${DISK_DEVICE}1"
+    else
+        echo "ERROR: Cannot find data disk partition!"
+        exit 1
+    fi
+
+    mkdir -p $MOUNT_POINT
+    mount $PARTITION $MOUNT_POINT || {
+        echo "ERROR: Failed to mount data disk!"
+        exit 1
+    }
+fi
+
+# 3. Source GROMACS environment
 source /usr/local/gromacs/bin/GMXRC
 
-# 3. Resume GROMACS simulations
+# 4. Resume GROMACS simulations
 # Find all simulation directories and resume each one
 for sim_dir in /data/simulations/*/; do
     if [ -d "$sim_dir" ]; then
@@ -392,13 +426,13 @@ for sim_dir in /data/simulations/*/; do
         # Determine which step to resume (MD > NPT > NVT)
         if [ -f "md.tpr" ] && [ -f "md.cpt" ]; then
             echo "Resuming Production MD in $sim_dir"
-            /data/resume_md.sh "$sim_dir"
+            /data/scripts/resume_md.sh "$sim_dir"
         elif [ -f "npt.tpr" ] && [ -f "npt.cpt" ]; then
             echo "Resuming NPT Equilibration in $sim_dir"
-            /data/resume_npt.sh "$sim_dir"
+            /data/scripts/resume_npt.sh "$sim_dir"
         elif [ -f "nvt.tpr" ] && [ -f "nvt.cpt" ]; then
             echo "Resuming NVT Equilibration in $sim_dir"
-            /data/resume_nvt.sh "$sim_dir"
+            /data/scripts/resume_nvt.sh "$sim_dir"
         else
             echo "No resumable checkpoint found in $sim_dir, skipping"
         fi
@@ -409,7 +443,7 @@ done
 **`resume_nvt.sh`**:
 ```bash
 #!/bin/bash
-# Resume NVT Equilibration step
+# Resume NVT Equilibration step and continue workflow
 
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <SIMULATION_DIR>"
@@ -425,16 +459,52 @@ source /usr/local/gromacs/bin/GMXRC
 # GMX Flags for Standard_D64alds_v6 (64 vCPUs)
 GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
 
-echo "Resuming NVT equilibration in $SIM_DIR"
-# Resume NVT from checkpoint
-nohup gmx mdrun -deffnm nvt -cpi nvt.cpt $GMX_FLAGS -v >> nvt_resume.log 2>&1 &
-echo "NVT resumed with PID $!"
+# Run continuation workflow in background
+nohup bash -c "
+    set -e
+    cd '$SIM_DIR'
+    source /usr/local/gromacs/bin/GMXRC
+
+    echo '[$(date)] Resuming NVT equilibration...' >> workflow.log
+    gmx mdrun -deffnm nvt -cpi nvt.cpt $GMX_FLAGS -v >> nvt_resume.log 2>&1
+
+    echo '[$(date)] NVT completed, starting NPT equilibration...' >> workflow.log
+    gmx grompp -f npt.mdp -c nvt.gro -r nvt.gro -t nvt.cpt -p topol.top -o npt.tpr -maxwarn 10 >> workflow.log 2>&1
+    gmx mdrun -deffnm npt $GMX_FLAGS -v >> npt.log 2>&1
+
+    echo '[$(date)] NPT completed, starting Production MD...' >> workflow.log
+    gmx grompp -f md.mdp -c npt.gro -r npt.gro -t npt.cpt -p topol.top -o md.tpr -maxwarn 10 >> workflow.log 2>&1
+    gmx mdrun -deffnm md $GMX_FLAGS -v >> md.log 2>&1
+
+    echo '[$(date)] MD completed, starting analysis...' >> workflow.log
+    # Get basename from directory name
+    BASENAME=\$(basename '$SIM_DIR')
+
+    # PBC correction
+    printf '0\n' | gmx trjconv -s md.tpr -f md.xtc -o md_noPBC.xtc -pbc nojump -ur compact >> workflow.log 2>&1
+
+    # RMSD (Backbone)
+    printf '4\n4\n' | gmx rms -s md.tpr -f md_noPBC.xtc -o rmsd.xvg -tu ns >> workflow.log 2>&1
+
+    # Gyrate
+    printf '1\n' | gmx gyrate -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_gyrate.xvg >> workflow.log 2>&1
+
+    # SASA
+    printf '1\n' | gmx sasa -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_sasa.xvg -tu ns >> workflow.log 2>&1
+
+    # RMSF
+    printf '1\n' | gmx rmsf -s md.tpr -f md_noPBC.xtc -res -o \${BASENAME}_rmsf.xvg >> workflow.log 2>&1
+
+    echo '[$(date)] ✓ Complete simulation pipeline finished!' >> workflow.log
+" >> workflow.log 2>&1 &
+
+echo "NVT resumed with PID $! - Full workflow will continue automatically"
 ```
 
 **`resume_npt.sh`**:
 ```bash
 #!/bin/bash
-# Resume NPT Equilibration step
+# Resume NPT Equilibration step and continue workflow
 
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <SIMULATION_DIR>"
@@ -450,16 +520,48 @@ source /usr/local/gromacs/bin/GMXRC
 # GMX Flags for Standard_D64alds_v6 (64 vCPUs)
 GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
 
-echo "Resuming NPT equilibration in $SIM_DIR"
-# Resume NPT from checkpoint
-nohup gmx mdrun -deffnm npt -cpi npt.cpt $GMX_FLAGS -v >> npt_resume.log 2>&1 &
-echo "NPT resumed with PID $!"
+# Run continuation workflow in background
+nohup bash -c "
+    set -e
+    cd '$SIM_DIR'
+    source /usr/local/gromacs/bin/GMXRC
+
+    echo '[$(date)] Resuming NPT equilibration...' >> workflow.log
+    gmx mdrun -deffnm npt -cpi npt.cpt $GMX_FLAGS -v >> npt_resume.log 2>&1
+
+    echo '[$(date)] NPT completed, starting Production MD...' >> workflow.log
+    gmx grompp -f md.mdp -c npt.gro -r npt.gro -t npt.cpt -p topol.top -o md.tpr -maxwarn 10 >> workflow.log 2>&1
+    gmx mdrun -deffnm md $GMX_FLAGS -v >> md.log 2>&1
+
+    echo '[$(date)] MD completed, starting analysis...' >> workflow.log
+    # Get basename from directory name
+    BASENAME=\$(basename '$SIM_DIR')
+
+    # PBC correction
+    printf '0\n' | gmx trjconv -s md.tpr -f md.xtc -o md_noPBC.xtc -pbc nojump -ur compact >> workflow.log 2>&1
+
+    # RMSD (Backbone)
+    printf '4\n4\n' | gmx rms -s md.tpr -f md_noPBC.xtc -o rmsd.xvg -tu ns >> workflow.log 2>&1
+
+    # Gyrate
+    printf '1\n' | gmx gyrate -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_gyrate.xvg >> workflow.log 2>&1
+
+    # SASA
+    printf '1\n' | gmx sasa -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_sasa.xvg -tu ns >> workflow.log 2>&1
+
+    # RMSF
+    printf '1\n' | gmx rmsf -s md.tpr -f md_noPBC.xtc -res -o \${BASENAME}_rmsf.xvg >> workflow.log 2>&1
+
+    echo '[$(date)] ✓ Complete simulation pipeline finished!' >> workflow.log
+" >> workflow.log 2>&1 &
+
+echo "NPT resumed with PID $! - Full workflow will continue automatically"
 ```
 
 **`resume_md.sh`**:
 ```bash
 #!/bin/bash
-# Resume Production MD step
+# Resume Production MD step and run analysis
 
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <SIMULATION_DIR>"
@@ -475,8 +577,36 @@ source /usr/local/gromacs/bin/GMXRC
 # GMX Flags for Standard_D64alds_v6 (64 vCPUs)
 GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
 
-echo "Resuming Production MD in $SIM_DIR"
-# Resume MD from checkpoint
-nohup gmx mdrun -deffnm md -cpi md.cpt $GMX_FLAGS -v >> md_resume.log 2>&1 &
-echo "Production MD resumed with PID $!"
+# Run continuation workflow in background
+nohup bash -c "
+    set -e
+    cd '$SIM_DIR'
+    source /usr/local/gromacs/bin/GMXRC
+
+    echo '[$(date)] Resuming Production MD...' >> workflow.log
+    gmx mdrun -deffnm md -cpi md.cpt $GMX_FLAGS -v >> md_resume.log 2>&1
+
+    echo '[$(date)] MD completed, starting analysis...' >> workflow.log
+    # Get basename from directory name
+    BASENAME=\$(basename '$SIM_DIR')
+
+    # PBC correction
+    printf '0\n' | gmx trjconv -s md.tpr -f md.xtc -o md_noPBC.xtc -pbc nojump -ur compact >> workflow.log 2>&1
+
+    # RMSD (Backbone)
+    printf '4\n4\n' | gmx rms -s md.tpr -f md_noPBC.xtc -o rmsd.xvg -tu ns >> workflow.log 2>&1
+
+    # Gyrate
+    printf '1\n' | gmx gyrate -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_gyrate.xvg >> workflow.log 2>&1
+
+    # SASA
+    printf '1\n' | gmx sasa -s md.tpr -f md_noPBC.xtc -o \${BASENAME}_sasa.xvg -tu ns >> workflow.log 2>&1
+
+    # RMSF
+    printf '1\n' | gmx rmsf -s md.tpr -f md_noPBC.xtc -res -o \${BASENAME}_rmsf.xvg >> workflow.log 2>&1
+
+    echo '[$(date)] ✓ Complete simulation pipeline finished!' >> workflow.log
+" >> workflow.log 2>&1 &
+
+echo "Production MD resumed with PID $! - Analysis will run automatically after completion"
 ```
