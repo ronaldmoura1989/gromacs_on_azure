@@ -15,9 +15,12 @@ echo "Input PDB: $PDB_FILE"
 echo "Running on $(hostname) with 64 vCPUs optimization"
 
 # GMX Flags for Standard_D64alds_v6 (64 vCPUs)
-# Using 8 MPI ranks with 8 OpenMP threads each = 64 threads total. 
+# Using 8 MPI ranks with 8 OpenMP threads each = 64 threads total.
 # 8x8 is often optimal for NUMA nodes on 64-core EPYC.
-GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu"
+# -dlb yes: Enable dynamic load balancing for better CPU utilization
+# -tunepme yes: Auto-tune PME grid vs direct space split for optimal performance
+GMX_FLAGS="-ntmpi 8 -ntomp 8 -nb cpu -dlb yes"
+GMX_FLAGS_TUNE="-ntmpi 8 -ntomp 8 -nb cpu -dlb yes -tunepme yes"
 
 # 1. Topology Generation
 echo "-> Generating topology..."
@@ -56,7 +59,7 @@ gmx mdrun -deffnm npt $GMX_FLAGS -v
 # 8. Production MD
 echo "-> Production MD..."
 gmx grompp -f md.mdp -c npt.gro -r npt.gro -t npt.cpt -p topol.top -o md.tpr -maxwarn 10
-gmx mdrun -deffnm md $GMX_FLAGS -v
+gmx mdrun -deffnm md $GMX_FLAGS_TUNE -v
 
 # 9. Analysis
 echo "-> Analysis..."
