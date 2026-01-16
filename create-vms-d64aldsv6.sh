@@ -54,12 +54,14 @@ az network nsg create \
   --location eastus
 
 # Regra SSH (ajuste source IP para seu range)
+# verify current IP curl -s ifconfig.me
+
 az network nsg rule create \
   --resource-group rg-md-eastus \
   --nsg-name nsg-md-compute \
   --name allow-ssh-brazil \
   --priority 1000 \
-  --source-address-prefixes 200.0.0.0/8 45.4.61.238 \
+  --source-address-prefixes 200.0.0.0/8 45.4.61.238 150.161.244.185 \
   --destination-port-ranges 22 \
   --protocol Tcp \
   --access Allow
