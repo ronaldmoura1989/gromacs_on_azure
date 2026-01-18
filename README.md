@@ -139,6 +139,75 @@ python3 update_scripts.py --restart
 
 This ensures zero data loss and applies new optimizations immediately.
 
+### Step 7: Archive Results to Blob Storage
+
+To save costs and secure your data, archive your simulation results to Azure Blob Storage using the provided scripts.
+
+**1. Create Storage Resources (First time only):**
+```bash
+chmod +x setup_storage.sh
+./setup_storage.sh
+```
+*   Creates a Storage Account (`stmdsimulations...`) and a container named `simulations`.
+*   **Important**: Copy the output `STORAGE_ACCOUNT_NAME` and `STORAGE_ACCOUNT_KEY` to your `.env` file.
+
+**2. Archive Results:**
+Transfer `npt.gro`, `md.cpt`, `*.log`, `*.xvg`, etc., directly from VM to Storage.
+
+```bash
+# Archive all VMs listed in gromacs_runs.tsv (default file selection)
+python3 archive_results.py
+
+# Archive a specific VM by IP
+python3 archive_results.py --ip <VM_IP>
+
+# Archive ALL files (backup entire folder)
+python3 archive_results.py --ip <VM_IP> --all
+```
+
+### Step 8: Clean Up (Delete VMs)
+
+Once a simulation is finished and archived, delete the compute resources to stop billing. **The 2TB Data Disk is preserved** for backup.
+
+```bash
+python3 delete_vm.py <VM_NAME>
+# Example: python3 delete_vm.py vm-md-09
+```
+*   **Deletes**: VM, OS Disk, Network Interface, Public IP.
+*   **Preserves**: Data Disk (`vm-md-09-datadisk`).
+
+### Step 9: Download Results to Local Machine
+
+You can download your data from Azure Storage using the Azure CLI or the Storage Explorer GUI.
+
+**Option A: Azure Storage Explorer (Recommended)**
+1.  Download [Azure Storage Explorer](https://azure.microsoft.com/en-us/products/storage/storage-explorer/).
+2.  Sign in with your Azure account.
+3.  Navigate to `Storage Accounts` > `(Your Account)` > `Blob Containers` > `simulations`.
+4.  Right-click any folder or file to download.
+
+**Option B: Command Line (Azure CLI)**
+```bash
+# Load your credentials
+source .env
+
+# Download all simulations
+az storage blob download-batch \
+    --destination ./local_results/ \
+    --source simulations \
+    --account-name $STORAGE_ACCOUNT_NAME \
+    --account-key $STORAGE_ACCOUNT_KEY
+
+# Download a specific simulation folder pattern
+az storage blob download-batch \
+    --destination ./local_results/ \
+    --source simulations \
+    --pattern "miocardin_variable_name/*" \
+    --account-name $STORAGE_ACCOUNT_NAME \
+    --account-key $STORAGE_ACCOUNT_KEY
+```
+
+
 ---
 
 ## 3. Virtual Machine Choice
